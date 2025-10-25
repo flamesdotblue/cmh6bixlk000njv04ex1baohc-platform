@@ -3,8 +3,6 @@ import HeaderBar from './components/HeaderBar';
 import SettingsPanel from './components/SettingsPanel';
 import Watchlist from './components/Watchlist';
 import SignalBoard from './components/SignalBoard';
-import AIInsights from './components/AIInsights';
-import StrategyLab from './components/StrategyLab';
 
 const BASE_URL = 'https://api.bybit.com';
 const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
@@ -22,7 +20,7 @@ function useInterval(callback, delay) {
 }
 
 function useBybitWS(symbols) {
-  const [status, setStatus] = useState('idle'); // idle|connecting|open|closed
+  const [status, setStatus] = useState('idle');
   const [latency, setLatency] = useState(null);
   const [lastTick, setLastTick] = useState(null);
   const [prices, setPrices] = useState({});
@@ -67,7 +65,6 @@ function useBybitWS(symbols) {
             setPrices((p) => ({ ...p, [sym]: { price: lastPrice, ts: Date.now() } }));
             setLastTick(Date.now());
           }
-          return;
         }
       } catch {}
     };
@@ -242,7 +239,6 @@ function decideSignal(symbol, tickPrice, k, params) {
 
   const reasoning = `${side} ${symbol}: EMA9/21 trend, vol x${volBoost.toFixed(2)}, RSI ${Math.round(rsi14[last] || 0)}, breakout ${params.breakoutLookback} bars.`;
 
-  // Confidence heuristic 0..100
   const conf = Math.max(0, Math.min(100,
     (trendUp || trendDown ? 25 : 0) +
     (Math.min(2, Math.max(0, volBoost - 1)) * 25) +
@@ -385,13 +381,11 @@ export default function App() {
             />
             <Watchlist symbols={symbols} setSymbols={setSymbols} prices={prices} />
           </div>
-          <div className="lg:col-span-9 space-y-6">
+          <div className="lg:col-span-9">
             {error && (
-              <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
+              <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
             )}
-            <AIInsights signals={signals} />
             <SignalBoard signals={signals} loading={loading} />
-            <StrategyLab fetchKlines={fetchKlines} intervalSel={intervalSel} signals={signals} settings={settings} />
           </div>
         </div>
 
