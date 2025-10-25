@@ -1,6 +1,11 @@
-import { TrendingUp, TrendingDown, Circle, CheckCircle2, XCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, Target, ShieldAlert } from 'lucide-react';
 
-function fmt(n, p = 6) { if (!isFinite(n)) return '—'; if (n > 100) return n.toFixed(2); if (n > 1) return n.toFixed(4); return n.toFixed(p); }
+function fmt(n, p = 6) {
+  if (!isFinite(n)) return '—';
+  if (n > 100) return n.toFixed(2);
+  if (n > 1) return n.toFixed(4);
+  return n.toFixed(p);
+}
 
 export default function SignalBoard({ signals, loading }) {
   return (
@@ -10,11 +15,13 @@ export default function SignalBoard({ signals, loading }) {
         <div className="text-xs text-white/60">{loading ? 'Computing…' : `${signals?.length || 0} setups`}</div>
       </div>
       {(!signals || signals.length === 0) && (
-        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">No qualified setups right now. Waiting for the next window.</div>
+        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">
+          No qualified setups right now. Waiting for the next window.
+        </div>
       )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {signals.map((s) => (
-          <SignalCard key={s.id} s={s} />
+          <SignalCard key={`${s.symbol}-${s.side}-${Math.round(s.entry*1e6)}`} s={s} />
         ))}
       </div>
     </div>
@@ -41,13 +48,15 @@ function SignalCard({ s }) {
         <Field label="Profit Target">${s.targetProfitUSDT} USDT</Field>
         <Field label="Risk">${s.riskUSDT} USDT</Field>
         <Field label="Entry">${fmt(s.entry)}</Field>
-        <Field label="Take Profit">${fmt(s.takeProfit)}</Field>
-        <Field label="Stop Loss">${fmt(s.stopLoss)}</Field>
+        <Field label="Take Profit"><span className="inline-flex items-center gap-1"><Target size={12} /> ${fmt(s.takeProfit)}</span></Field>
+        <Field label="Stop Loss"><span className="inline-flex items-center gap-1"><ShieldAlert size={12} /> ${fmt(s.stopLoss)}</span></Field>
         <Field label="Capital Used">${s.capital} USDT</Field>
       </div>
 
       {s.reasoning && (
-        <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">{s.reasoning}</div>
+        <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">
+          {s.reasoning}
+        </div>
       )}
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-white/60">
@@ -55,25 +64,8 @@ function SignalCard({ s }) {
         <Badge>ATR {(s.meta?.atrPct ? (s.meta.atrPct * 100).toFixed(2) : '—')}%</Badge>
         <Badge>RSI {s.meta?.rsi ? Math.round(s.meta.rsi) : '—'}</Badge>
       </div>
-
-      <div className="mt-3 flex items-center gap-2 text-[11px]">
-        <Status status={s.status} />
-        {s.closedAt && <span className="text-white/40">Closed {new Date(s.closedAt).toLocaleTimeString()}</span>}
-      </div>
     </div>
   );
-}
-
-function Status({ status }) {
-  const map = {
-    NEW: { icon: <Circle size={12} />, cls: 'text-white/60', text: 'New' },
-    ENTERED: { icon: <Circle size={12} />, cls: 'text-amber-300', text: 'Entered' },
-    TP: { icon: <CheckCircle2 size={12} />, cls: 'text-emerald-300', text: 'TP Hit' },
-    SL: { icon: <XCircle size={12} />, cls: 'text-rose-300', text: 'SL Hit' },
-    CANCELLED: { icon: <XCircle size={12} />, cls: 'text-white/50', text: 'Cancelled' },
-  };
-  const it = map[status] || map.NEW;
-  return <div className={`inline-flex items-center gap-1 ${it.cls}`}>{it.icon}<span>{it.text}</span></div>;
 }
 
 function Field({ label, children }) {
@@ -85,4 +77,6 @@ function Field({ label, children }) {
   );
 }
 
-function Badge({ children }) { return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>; }
+function Badge({ children }) {
+  return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>;
+}

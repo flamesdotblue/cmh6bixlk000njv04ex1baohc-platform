@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HeaderBar from './components/HeaderBar';
-import Controls from './components/Controls';
+import SettingsPanel from './components/SettingsPanel';
 import Watchlist from './components/Watchlist';
 import SignalBoard from './components/SignalBoard';
 
@@ -10,53 +10,44 @@ const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
 const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
 
 function useInterval(callback, delay) {
-  const savedCallback = useRef();
-  useEffect(() => { savedCallback.current = callback; }, [callback]);
+  const saved = useRef();
+  useEffect(() => { saved.current = callback; }, [callback]);
   useEffect(() => {
     if (delay == null) return;
-    const id = setInterval(() => savedCallback.current && savedCallback.current(), delay);
+    const id = setInterval(() => saved.current && saved.current(), delay);
     return () => clearInterval(id);
   }, [delay]);
 }
 
-function useLocalStorage(key, initialValue) {
-  const [value, setValue] = useState(() => {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw != null ? JSON.parse(raw) : initialValue;
-    } catch {
-      return initialValue;
-    }
-  });
-  useEffect(() => {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-  }, [key, value]);
-  return [value, setValue];
-}
-
 function useBybitWS(symbols) {
-  const [status, setStatus] = useState('idle');
-  const [lastPing, setLastPing] = useState(null);
-  const [lastPong, setLastPong] = useState(null);
+  const [status, setStatus] = useState('idle'); // idle|connecting|open|closed
   const [latency, setLatency] = useState(null);
-  const [prices, setPrices] = useState({});
   const [lastTick, setLastTick] = useState(null);
+  const [prices, setPrices] = useState({});
+
   const wsRef = useRef(null);
   const subsRef = useRef(new Set());
+  const lastPingRef = useRef(null);
+  const backoffRef = useRef(1000);
+
+  const subscribe = (ws, nextSymbols) => {
+    const args = nextSymbols.map((s) => `tickers.${s}`);
+    subsRef.current = new Set(args);
+    ws.send(JSON.stringify({ op: 'subscribe', args }));
+  };
 
   const connect = useCallback(() => {
-    if (wsRef.current) { try { wsRef.current.close(); } catch {} wsRef.current = null; }
+    try { wsRef.current && wsRef.current.close(); } catch {}
     setStatus('connecting');
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setStatus('open');
-      const args = symbols.map((s) => `tickers.${s}`);
-      subsRef.current = new Set(args);
-      ws.send(JSON.stringify({ op: 'subscribe', args }));
-      const now = Date.now();
-      setLastPing(now);
+      backoffRef.current = 1000;
+      subscribe(ws, symbols);
+      // initial ping
+      lastPingRef.current = Date.now();
       ws.send(JSON.stringify({ op: 'ping' }));
     };
 
@@ -64,30 +55,38 @@ function useBybitWS(symbols) {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.op === 'pong') {
-          const now = Date.now();
-          setLastPong(now);
-          setLatency((last) => (lastPing ? now - lastPing : last));
+          if (lastPingRef.current) setLatency(Date.now() - lastPingRef.current);
           return;
         }
         if (msg.topic && msg.topic.startsWith('tickers.')) {
           const sym = msg.topic.split('.')[1];
-          const data = Array.isArray(msg.data) ? msg.data[0] : msg.data;
-          const lastPrice = parseFloat(data?.lastPrice || '0');
+          const data = msg.data?.[0] || msg.data || {};
+          const lastPrice = parseFloat(data.lastPrice || data.lp || '0');
           if (Number.isFinite(lastPrice) && lastPrice > 0) {
             setPrices((p) => ({ ...p, [sym]: { price: lastPrice, ts: Date.now() } }));
             setLastTick(Date.now());
           }
+          return;
         }
       } catch {}
     };
 
-    ws.onclose = () => { setStatus('closed'); };
-    ws.onerror = () => { setStatus('closed'); };
-  }, [symbols, lastPing]);
+    ws.onclose = () => {
+      setStatus('closed');
+      // reconnect with backoff
+      const t = backoffRef.current;
+      backoffRef.current = Math.min(backoffRef.current * 2, 15000);
+      setTimeout(() => connect(), t);
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch {}
+    };
+  }, [symbols]);
 
   useEffect(() => {
     connect();
-    return () => { try { wsRef.current && wsRef.current.close(); } catch {} wsRef.current = null; };
+    return () => { try { wsRef.current && wsRef.current.close(); } catch {} };
   }, [connect]);
 
   useEffect(() => {
@@ -102,53 +101,18 @@ function useBybitWS(symbols) {
     subsRef.current = want;
   }, [symbols]);
 
+  // ping every 10s
   useInterval(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1) return;
-    const now = Date.now();
-    setLastPing(now);
+    lastPingRef.current = Date.now();
     ws.send(JSON.stringify({ op: 'ping' }));
   }, 10000);
 
   return { status, latency, prices, lastTick };
 }
 
-// Indicators
-function ema(values, period) {
-  if (!values?.length) return [];
-  const k = 2 / (period + 1);
-  const out = [];
-  let prev = values[0];
-  out.push(prev);
-  for (let i = 1; i < values.length; i++) { prev = values[i] * k + prev * (1 - k); out.push(prev); }
-  return out;
-}
-function rsi(values, period = 14) {
-  if (!values || values.length < period + 1) return Array(values?.length || 0).fill(null);
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) { const d = values[i] - values[i-1]; if (d >= 0) gains += d; else losses -= d; }
-  gains /= period; losses /= period; const out = Array(values.length).fill(null);
-  out[period] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
-  for (let i = period + 1; i < values.length; i++) {
-    const d = values[i] - values[i-1]; const g = d > 0 ? d : 0; const l = d < 0 ? -d : 0;
-    gains = (gains * (period - 1) + g) / period; losses = (losses * (period - 1) + l) / period;
-    out[i] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
-  }
-  return out;
-}
-function trueRange(h, l, c, i) { if (i === 0) return h[0] - l[0]; return Math.max(h[i]-l[i], Math.abs(h[i]-c[i-1]), Math.abs(l[i]-c[i-1])); }
-function atr(highs, lows, closes, period = 14) {
-  if (!highs?.length || highs.length !== lows.length || lows.length !== closes.length) return [];
-  const trs = highs.map((_, i) => trueRange(highs, lows, closes, i));
-  const out = []; let prev = 0;
-  for (let i = 0; i < trs.length; i++) {
-    if (i < period) { const sma = trs.slice(0, i+1).reduce((a,b)=>a+b,0)/(i+1); prev = sma; out.push(prev); }
-    else { prev = (prev*(period-1)+trs[i])/period; out.push(prev); }
-  }
-  return out;
-}
-
-async function fetchKlines(symbol, interval = '5', limit = 200) {
+async function fetchKlines(symbol, interval = '5', limit = 240) {
   const url = `${BASE_URL}/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Kline fetch failed');
@@ -162,58 +126,150 @@ async function fetchKlines(symbol, interval = '5', limit = 200) {
   return { o, h, l, c, v };
 }
 
+function ema(values, period) {
+  if (!values?.length) return [];
+  const k = 2 / (period + 1);
+  const out = [];
+  let prev = values[0];
+  out.push(prev);
+  for (let i = 1; i < values.length; i++) {
+    const next = values[i] * k + prev * (1 - k);
+    out.push(next);
+    prev = next;
+  }
+  return out;
+}
+
+function rsi(values, period = 14) {
+  if (!values || values.length < period + 1) return Array(values?.length || 0).fill(null);
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  gains /= period; losses /= period;
+  const out = Array(values.length).fill(null);
+  out[period] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
+  for (let i = period + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    gains = (gains * (period - 1) + gain) / period;
+    losses = (losses * (period - 1) + loss) / period;
+    out[i] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
+  }
+  return out;
+}
+
+function trueRange(h, l, c, i) {
+  if (i === 0) return h[0] - l[0];
+  return Math.max(
+    h[i] - l[i],
+    Math.abs(h[i] - c[i - 1]),
+    Math.abs(l[i] - c[i - 1])
+  );
+}
+
+function atr(highs, lows, closes, period = 14) {
+  if (!highs?.length || highs.length !== lows.length || lows.length !== closes.length) return [];
+  const trs = highs.map((_, i) => trueRange(highs, lows, closes, i));
+  const res = [];
+  let prev = 0;
+  for (let i = 0; i < trs.length; i++) {
+    if (i < period) {
+      const slice = trs.slice(0, i + 1);
+      const sma = slice.reduce((a, b) => a + b, 0) / slice.length;
+      prev = sma;
+      res.push(prev);
+    } else {
+      prev = (prev * (period - 1) + trs[i]) / period;
+      res.push(prev);
+    }
+  }
+  return res;
+}
+
 function decideSignal(symbol, tickPrice, k, params) {
-  if (!k || !k.c || k.c.length < 50 || !tickPrice) return null;
-  const closes = k.c, highs = k.h, lows = k.l, vols = k.v; const last = closes.length - 1;
-  const ema9 = ema(closes, 9); const ema21 = ema(closes, 21); const rsi14 = rsi(closes, 14); const a = atr(highs, lows, closes, 14);
-  const atrPct = a[last] / closes[last];
-  let leverage = 20; if (atrPct < 0.008) leverage = 50; else if (atrPct < 0.015) leverage = 25; else if (atrPct < 0.03) leverage = 15; else leverage = 10; leverage = Math.min(params.maxLeverage || leverage, leverage);
-  const trendUp = ema9[last] > ema21[last]; const trendDown = ema9[last] < ema21[last];
-  const recentVol = vols.slice(-3).reduce((x,y)=>x+y,0)/3; const baseVol = vols.slice(-20,-3).reduce((x,y)=>x+y,0)/17 || 1; const volBoost = recentVol / baseVol;
-  const mom = closes[last] - closes[last-3];
+  if (!k || !k.c || k.c.length < 60 || !tickPrice) return null;
+  const closes = k.c;
+  const highs = k.h;
+  const lows = k.l;
+  const vols = k.v;
+  const last = closes.length - 1;
+
+  const ema9 = ema(closes, 9);
+  const ema21 = ema(closes, 21);
+  const rsi14 = rsi(closes, 14);
+  const a = atr(highs, lows, closes, 14);
+  const atrPct = a[last] / Math.max(1e-9, closes[last]);
+
+  let leverage = atrPct < 0.008 ? 50 : atrPct < 0.015 ? 25 : atrPct < 0.03 ? 15 : 10;
+  leverage = Math.min(params.maxLeverage, leverage);
+
+  const trendUp = ema9[last] > ema21[last];
+  const trendDown = ema9[last] < ema21[last];
+
+  const recentVol = vols.slice(-3).reduce((x, y) => x + y, 0) / 3;
+  const baseVol = vols.slice(-20, -3).reduce((x, y) => x + y, 0) / Math.max(1, vols.slice(-20, -3).length);
+  const volBoost = baseVol ? recentVol / baseVol : 0;
+
+  const mom = closes[last] - closes[last - 3];
   const rangeHigh = Math.max(...highs.slice(-params.breakoutLookback));
   const rangeLow = Math.min(...lows.slice(-params.breakoutLookback));
-  const strongLong = trendUp && mom > 0 && volBoost > 1.05 && tickPrice > rangeHigh * (1 - params.breakoutBuffer);
-  const strongShort = trendDown && mom < 0 && volBoost > 1.05 && tickPrice < rangeLow * (1 + params.breakoutBuffer);
+  const breakoutLong = tickPrice > rangeHigh * (1 - params.breakoutBuffer);
+  const breakoutShort = tickPrice < rangeLow * (1 + params.breakoutBuffer);
+
   const rsiOkLong = (rsi14[last] ?? 50) > 48 && (rsi14[last] ?? 50) < 75;
   const rsiOkShort = (rsi14[last] ?? 50) < 52 && (rsi14[last] ?? 50) > 25;
+
   let side = null;
-  if (params.enableLongs && strongLong && rsiOkLong) side = 'LONG';
-  if (params.enableShorts && strongShort && rsiOkShort) side = side ? side : 'SHORT';
+  if (params.enableLongs && trendUp && mom > 0 && volBoost > 1.05 && breakoutLong && rsiOkLong) side = 'LONG';
+  if (params.enableShorts && trendDown && mom < 0 && volBoost > 1.05 && breakoutShort && rsiOkShort) side = side ? side : 'SHORT';
   if (!side) return null;
-  const capital = params.capital; const amount = params.amount; const notional = amount * leverage; const targetProfitUSDT = params.targetProfit; const riskUSDT = params.risk;
-  const requiredMoveTP = targetProfitUSDT / notional; const requiredMoveSL = riskUSDT / notional;
+
+  const capital = params.capital;
+  const amount = params.amount;
+  const notional = amount * leverage;
+  const targetProfitUSDT = params.targetProfit;
+  const riskUSDT = params.risk;
+
+  const requiredMoveTP = targetProfitUSDT / Math.max(1e-9, notional);
+  const requiredMoveSL = riskUSDT / Math.max(1e-9, notional);
+
   const entry = tickPrice;
   const tp = side === 'LONG' ? entry * (1 + requiredMoveTP) : entry * (1 - requiredMoveTP);
   const sl = side === 'LONG' ? entry * (1 - requiredMoveSL) : entry * (1 + requiredMoveSL);
+
+  const reasoning = `${side} ${symbol}: EMA9/21 trend, vol x${volBoost.toFixed(2)}, RSI ${Math.round(rsi14[last] || 0)}, breakout ${params.breakoutLookback} bars.`;
+
   return {
-    id: `${symbol}-${side}-${Math.round(entry*1e6)}`,
-    symbol, side, price: tickPrice, amount, leverage, capital, targetProfitUSDT, riskUSDT, entry, takeProfit: tp, stopLoss: sl,
-    meta: { volBoost, atrPct, rsi: rsi14[last], ema9: ema9[last], ema21: ema21[last] },
-    reasoning: `${side} ${symbol}: EMA9/21 trend, vol x${volBoost.toFixed(2)}, RSI ${Math.round(rsi14[last] || 0)}, breakout ${params.breakoutLookback} bars.`,
-    status: 'NEW', // NEW | ENTERED | TP | SL | CANCELLED
-    createdAt: Date.now(),
+    symbol,
+    side,
+    price: tickPrice,
+    amount,
+    leverage,
+    capital,
+    targetProfitUSDT,
+    riskUSDT,
+    entry,
+    takeProfit: tp,
+    stopLoss: sl,
+    meta: { volBoost, atrPct, rsi: rsi14[last] },
+    reasoning,
   };
 }
 
-function useAudio(src) {
-  const ref = useRef(null);
-  useEffect(() => { const a = new Audio(src); a.volume = 0.4; ref.current = a; }, [src]);
-  const play = useCallback(() => { try { ref.current && ref.current.play(); } catch {} }, []);
-  return play;
-}
-
 export default function App() {
-  const [symbols, setSymbols] = useLocalStorage('symbols', DEFAULT_SYMBOLS);
+  const [symbols, setSymbols] = useState(DEFAULT_SYMBOLS);
   const { status, latency, prices, lastTick } = useBybitWS(symbols);
-  const [intervalSel, setIntervalSel] = useLocalStorage('intervalSel', '5');
-  const [running, setRunning] = useLocalStorage('running', true);
+
+  const [running, setRunning] = useState(true);
+  const [intervalSel, setIntervalSel] = useState('5');
   const [signals, setSignals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [stats, setStats] = useLocalStorage('stats', { total: 0, wins: 0, losses: 0, cancelled: 0 });
 
-  const [settings, setSettings] = useLocalStorage('settings', {
+  const [settings, setSettings] = useState({
     capital: 20,
     amount: 20,
     targetProfit: 20,
@@ -223,117 +279,79 @@ export default function App() {
     breakoutBuffer: 0.0005,
     enableLongs: true,
     enableShorts: true,
-    soundAlerts: true,
-    browserAlerts: false,
-    autoCancelMins: 30,
+    notifications: false,
   });
 
-  const pingSound = useAudio('data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQAA');
-  const winSound = useAudio('data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQAA');
-  const loseSound = useAudio('data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQAA');
-
+  // Enable browser notifications if user asks
   useEffect(() => {
-    if (settings.browserAlerts && 'Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission().catch(() => {});
+    if (settings.notifications && 'Notification' in window) {
+      if (Notification.permission === 'default') Notification.requestPermission();
     }
-  }, [settings.browserAlerts]);
+  }, [settings.notifications]);
 
-  const params = useMemo(() => ({
-    capital: settings.capital,
-    amount: settings.amount,
-    targetProfit: settings.targetProfit,
-    risk: settings.risk,
-    maxLeverage: settings.maxLeverage,
-    breakoutLookback: settings.breakoutLookback,
-    breakoutBuffer: settings.breakoutBuffer,
-    enableLongs: settings.enableLongs,
-    enableShorts: settings.enableShorts,
-  }), [settings]);
-
-  const notify = useCallback((title, body, type = 'info') => {
-    if (settings.soundAlerts) { if (type === 'win') winSound(); else if (type === 'loss') loseSound(); else pingSound(); }
-    if (settings.browserAlerts && 'Notification' in window && Notification.permission === 'granted') {
-      try { new Notification(title, { body }); } catch {}
-    }
-  }, [settings, pingSound, winSound, loseSound]);
+  const notify = useCallback((title, body) => {
+    if (!settings.notifications) return;
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') new Notification(title, { body });
+  }, [settings.notifications]);
 
   const fetchAndSignal = useCallback(async () => {
     if (!running) return;
-    setLoading(true); setError(null);
+    setLoading(true);
+    setError(null);
     try {
-      const results = await Promise.all(symbols.map(async (sym) => {
-        try {
-          const k = await fetchKlines(sym, intervalSel, 200);
-          const tick = prices[sym]?.price;
-          return decideSignal(sym, tick, k, params);
-        } catch { return null; }
-      }));
+      const results = await Promise.all(
+        symbols.map(async (sym) => {
+          try {
+            const k = await fetchKlines(sym, intervalSel, 240);
+            const tick = prices[sym]?.price;
+            return decideSignal(sym, tick, k, settings);
+          } catch (e) {
+            return null;
+          }
+        })
+      );
       const list = results.filter(Boolean);
-      const ranked = list.sort((a,b) => {
-        const av = Math.abs(a.takeProfit - a.entry); const bv = Math.abs(b.takeProfit - b.entry);
-        const va = a.meta?.volBoost || 0; const vb = b.meta?.volBoost || 0;
-        if (vb !== va) return vb - va; return bv - av;
+      const ranked = list.sort((a, b) => {
+        const av = Math.abs(a.takeProfit - a.entry);
+        const bv = Math.abs(b.takeProfit - b.entry);
+        if ((b.meta?.volBoost || 0) !== (a.meta?.volBoost || 0)) return (b.meta?.volBoost || 0) - (a.meta?.volBoost || 0);
+        return bv - av;
       });
-      setSignals((prev) => {
-        const mapPrev = Object.fromEntries(prev.map(s => [s.id, s]));
-        const merged = ranked.map(s => mapPrev[s.id] ? { ...s, status: mapPrev[s.id].status, createdAt: mapPrev[s.id].createdAt } : s);
-        return merged;
-      });
+
+      // Notify on new top signal change
+      const prevTopKey = signals[0] ? `${signals[0].symbol}-${signals[0].side}` : '';
+      const nextTopKey = ranked[0] ? `${ranked[0].symbol}-${ranked[0].side}` : '';
+      if (nextTopKey && nextTopKey !== prevTopKey) {
+        notify('New Alpha Setup', `${ranked[0].side} ${ranked[0].symbol} | Entry ${ranked[0].entry.toFixed(4)}`);
+      }
+
+      setSignals(ranked);
     } catch (e) {
-      setError('Failed to compute signals');
-    } finally { setLoading(false); }
-  }, [symbols, intervalSel, prices, running, params]);
+      setError('Failed to compute signals.');
+    } finally {
+      setLoading(false);
+    }
+  }, [symbols, intervalSel, prices, running, settings, signals, notify]);
 
-  useEffect(() => { fetchAndSignal(); }, [intervalSel]);
+  // Initial and on interval change
+  useEffect(() => { fetchAndSignal(); }, [fetchAndSignal]);
 
-  const debounceRef = useRef(null);
+  // Recompute on new live ticks (debounced ~2s)
+  const debRef = useRef(null);
   useEffect(() => {
     if (!running) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => { fetchAndSignal(); }, 2500);
-    return () => debounceRef.current && clearTimeout(debounceRef.current);
+    if (debRef.current) clearTimeout(debRef.current);
+    debRef.current = setTimeout(() => fetchAndSignal(), 2000);
+    return () => debRef.current && clearTimeout(debRef.current);
   }, [lastTick, fetchAndSignal, running]);
 
-  useInterval(() => { if (running) fetchAndSignal(); }, 60 * 1000);
-
-  // Signal state machine updates with live price: entry -> TP/SL -> stats
-  useEffect(() => {
-    if (!running || !signals?.length) return;
-    setSignals((prev) => {
-      const now = Date.now();
-      let changed = false;
-      const updated = prev.map((s) => {
-        const p = prices[s.symbol]?.price; if (!p) return s;
-        let st = s.status;
-        if (st === 'NEW') {
-          // Enter immediately at current price when created (since entry = tick)
-          st = 'ENTERED'; changed = true; if (settings.soundAlerts) pingSound(); if (settings.browserAlerts) notify(`${s.side} ${s.symbol}`, 'Entered at live price');
-        }
-        if (st === 'ENTERED') {
-          if ((s.side === 'LONG' && p >= s.takeProfit) || (s.side === 'SHORT' && p <= s.takeProfit)) {
-            st = 'TP'; changed = true; notify(`TP Hit: ${s.symbol}`, `Side: ${s.side} | TP: ${s.takeProfit.toFixed(6)}`, 'win');
-          } else if ((s.side === 'LONG' && p <= s.stopLoss) || (s.side === 'SHORT' && p >= s.stopLoss)) {
-            st = 'SL'; changed = true; notify(`SL Hit: ${s.symbol}`, `Side: ${s.side} | SL: ${s.stopLoss.toFixed(6)}`, 'loss');
-          } else if (settings.autoCancelMins && now - s.createdAt > settings.autoCancelMins * 60 * 1000) {
-            st = 'CANCELLED'; changed = true; notify(`Cancelled: ${s.symbol}`, 'Timed out');
-          }
-        }
-        return st !== s.status ? { ...s, status: st, closedAt: st === 'TP' || st === 'SL' || st === 'CANCELLED' ? now : s.closedAt } : s;
-      });
-      if (changed) {
-        const t = updated.filter(x => x.status !== 'NEW' && x.status !== 'ENTERED');
-        const wins = t.filter(x => x.status === 'TP').length;
-        const losses = t.filter(x => x.status === 'SL').length;
-        const cancelled = t.filter(x => x.status === 'CANCELLED').length;
-        setStats({ total: t.length, wins, losses, cancelled });
-      }
-      return updated;
-    });
-  }, [prices, running, settings.autoCancelMins, settings.soundAlerts, settings.browserAlerts, notify, pingSound]);
+  // Periodic refresh of klines to keep indicators current
+  useInterval(() => { if (running) fetchAndSignal(); }, 60000);
 
   const headerInfo = useMemo(() => ({
-    title: 'Real‑Time Crypto Futures Alpha Signals',
-    subtitle: 'Bybit USDT‑Perp. High‑probability scalps and quick swings with live prices.',
+    title: 'Real-Time Crypto Futures Alpha Signals',
+    subtitle: 'Bybit USDT-Perp. High-probability scalps and quick swings with execution-ready entries.',
   }), []);
 
   return (
@@ -346,23 +364,21 @@ export default function App() {
         lastTick={lastTick}
         onRefresh={fetchAndSignal}
         loading={loading}
-        stats={stats}
       />
 
       <div className="mx-auto max-w-7xl px-4 pb-12 pt-6">
-        <Controls
-          running={running}
-          setRunning={setRunning}
-          intervalSel={intervalSel}
-          setIntervalSel={setIntervalSel}
-          onRefresh={fetchAndSignal}
-          loading={loading}
-          settings={settings}
-          setSettings={setSettings}
-        />
-
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-          <div className="lg:col-span-3">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div className="lg:col-span-3 space-y-6">
+            <SettingsPanel
+              running={running}
+              setRunning={setRunning}
+              intervalSel={intervalSel}
+              setIntervalSel={setIntervalSel}
+              settings={settings}
+              setSettings={setSettings}
+              onRefresh={fetchAndSignal}
+              loading={loading}
+            />
             <Watchlist symbols={symbols} setSymbols={setSymbols} prices={prices} />
           </div>
           <div className="lg:col-span-9">
@@ -374,8 +390,8 @@ export default function App() {
         </div>
 
         <div className="mt-8 space-y-2 border-t border-white/10 pt-6 text-center text-xs text-white/50">
-          <p>Data source: Bybit public REST + WebSocket (v5). Prices update in real time from exchange feed.</p>
-          <p>This tool provides informational signals. Futures trading is high risk. Manage risk strictly.</p>
+          <p>Live prices via Bybit WebSocket v5 (linear). Signals recompute on tick and every 60s.</p>
+          <p>Research/education only. Crypto futures involve substantial risk. Manage risk strictly.</p>
         </div>
       </div>
     </div>
