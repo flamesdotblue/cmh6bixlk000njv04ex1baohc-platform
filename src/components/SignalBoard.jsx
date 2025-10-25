@@ -1,13 +1,8 @@
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Circle, CheckCircle2, XCircle } from 'lucide-react';
 
-function fmt(n, p = 6) {
-  if (!isFinite(n)) return '—';
-  if (n > 100) return n.toFixed(2);
-  if (n > 1) return n.toFixed(4);
-  return n.toFixed(p);
-}
+function fmt(n, p = 6) { if (!isFinite(n)) return '—'; if (n > 100) return n.toFixed(2); if (n > 1) return n.toFixed(4); return n.toFixed(p); }
 
-export default function SignalBoard({ signals, loading, onArm }) {
+export default function SignalBoard({ signals, loading }) {
   return (
     <div className="rounded-xl border border-white/10 bg-zinc-900/40 p-4">
       <div className="mb-3 flex items-center justify-between">
@@ -19,14 +14,14 @@ export default function SignalBoard({ signals, loading, onArm }) {
       )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {signals.map((s) => (
-          <SignalCard key={s.id} s={s} onArm={() => onArm(s)} />
+          <SignalCard key={s.id} s={s} />
         ))}
       </div>
     </div>
   );
 }
 
-function SignalCard({ s, onArm }) {
+function SignalCard({ s }) {
   const isLong = s.side === 'LONG';
   return (
     <div className="relative overflow-hidden rounded-xl border border-white/10 bg-zinc-900/60 p-4">
@@ -61,11 +56,24 @@ function SignalCard({ s, onArm }) {
         <Badge>RSI {s.meta?.rsi ? Math.round(s.meta.rsi) : '—'}</Badge>
       </div>
 
-      <div className="mt-3 flex justify-end">
-        <button onClick={onArm} className="rounded-md bg-emerald-500/20 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30">Arm TP/SL Monitor</button>
+      <div className="mt-3 flex items-center gap-2 text-[11px]">
+        <Status status={s.status} />
+        {s.closedAt && <span className="text-white/40">Closed {new Date(s.closedAt).toLocaleTimeString()}</span>}
       </div>
     </div>
   );
+}
+
+function Status({ status }) {
+  const map = {
+    NEW: { icon: <Circle size={12} />, cls: 'text-white/60', text: 'New' },
+    ENTERED: { icon: <Circle size={12} />, cls: 'text-amber-300', text: 'Entered' },
+    TP: { icon: <CheckCircle2 size={12} />, cls: 'text-emerald-300', text: 'TP Hit' },
+    SL: { icon: <XCircle size={12} />, cls: 'text-rose-300', text: 'SL Hit' },
+    CANCELLED: { icon: <XCircle size={12} />, cls: 'text-white/50', text: 'Cancelled' },
+  };
+  const it = map[status] || map.NEW;
+  return <div className={`inline-flex items-center gap-1 ${it.cls}`}>{it.icon}<span>{it.text}</span></div>;
 }
 
 function Field({ label, children }) {
@@ -77,6 +85,4 @@ function Field({ label, children }) {
   );
 }
 
-function Badge({ children }) {
-  return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>;
-}
+function Badge({ children }) { return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>; }

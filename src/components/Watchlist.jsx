@@ -1,12 +1,7 @@
 import { Plus, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
-function fmt(n) {
-  if (!n || !isFinite(n)) return '—';
-  if (n > 100) return n.toFixed(2);
-  if (n > 1) return n.toFixed(4);
-  return n.toFixed(6);
-}
+function fmt(n) { if (!n || !isFinite(n)) return '—'; if (n > 100) return n.toFixed(2); if (n > 1) return n.toFixed(4); return n.toFixed(6); }
 
 export default function Watchlist({ symbols, setSymbols, prices }) {
   const [newSym, setNewSym] = useState('');
@@ -14,21 +9,12 @@ export default function Watchlist({ symbols, setSymbols, prices }) {
   const rows = useMemo(() => symbols.map((s) => ({ symbol: s, price: prices?.[s]?.price, ts: prices?.[s]?.ts })), [symbols, prices]);
 
   const addSymbol = () => {
-    const raw = newSym.trim().toUpperCase();
-    if (!raw) return;
-    const withUsdt = raw.endsWith('USDT') ? raw : `${raw}USDT`;
-    if (!/^[A-Z0-9]{3,15}$/.test(withUsdt)) return;
-    if (symbols.includes(withUsdt)) return;
-    setSymbols([withUsdt, ...symbols]);
-    setNewSym('');
+    const s = newSym.trim().toUpperCase(); if (!s) return; if (!/^[A-Z0-9]{3,15}$/.test(s)) return;
+    const withUsdt = s.endsWith('USDT') ? s : `${s}USDT`; if (symbols.includes(withUsdt)) return;
+    setSymbols([withUsdt, ...symbols]); setNewSym('');
   };
 
-  const removeSymbol = (sym) => setSymbols(symbols.filter((x) => x !== sym));
-
-  useEffect(() => {
-    const onEnter = (e) => { if (e.key === 'Enter') addSymbol(); };
-    return () => {};
-  }, [addSymbol]);
+  const removeSymbol = (sym) => { setSymbols(symbols.filter((x) => x !== sym)); };
 
   return (
     <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-4">
