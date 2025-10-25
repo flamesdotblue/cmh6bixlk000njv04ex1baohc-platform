@@ -7,7 +7,7 @@ function fmt(n, p = 6) {
   return n.toFixed(p);
 }
 
-export default function SignalBoard({ signals, loading }) {
+export default function SignalBoard({ signals, loading, onArm }) {
   return (
     <div className="rounded-xl border border-white/10 bg-zinc-900/40 p-4">
       <div className="mb-3 flex items-center justify-between">
@@ -15,20 +15,18 @@ export default function SignalBoard({ signals, loading }) {
         <div className="text-xs text-white/60">{loading ? 'Computing…' : `${signals?.length || 0} setups`}</div>
       </div>
       {(!signals || signals.length === 0) && (
-        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">
-          No qualified setups right now. Waiting for the next window.
-        </div>
+        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">No qualified setups right now. Waiting for the next window.</div>
       )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {signals.map((s) => (
-          <SignalCard key={`${s.symbol}-${s.side}-${Math.round(s.entry*1e6)}`} s={s} />
+          <SignalCard key={s.id} s={s} onArm={() => onArm(s)} />
         ))}
       </div>
     </div>
   );
 }
 
-function SignalCard({ s }) {
+function SignalCard({ s, onArm }) {
   const isLong = s.side === 'LONG';
   return (
     <div className="relative overflow-hidden rounded-xl border border-white/10 bg-zinc-900/60 p-4">
@@ -54,15 +52,17 @@ function SignalCard({ s }) {
       </div>
 
       {s.reasoning && (
-        <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">
-          {s.reasoning}
-        </div>
+        <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">{s.reasoning}</div>
       )}
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-white/60">
         <Badge>Vol x{(s.meta?.volBoost || 0).toFixed(2)}</Badge>
         <Badge>ATR {(s.meta?.atrPct ? (s.meta.atrPct * 100).toFixed(2) : '—')}%</Badge>
         <Badge>RSI {s.meta?.rsi ? Math.round(s.meta.rsi) : '—'}</Badge>
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <button onClick={onArm} className="rounded-md bg-emerald-500/20 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/30">Arm TP/SL Monitor</button>
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import { Plus, X } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 function fmt(n) {
   if (!n || !isFinite(n)) return '—';
@@ -11,25 +11,24 @@ function fmt(n) {
 export default function Watchlist({ symbols, setSymbols, prices }) {
   const [newSym, setNewSym] = useState('');
 
-  const rows = useMemo(() => symbols.map((s) => ({
-    symbol: s,
-    price: prices?.[s]?.price,
-    ts: prices?.[s]?.ts,
-  })), [symbols, prices]);
+  const rows = useMemo(() => symbols.map((s) => ({ symbol: s, price: prices?.[s]?.price, ts: prices?.[s]?.ts })), [symbols, prices]);
 
   const addSymbol = () => {
-    const s = newSym.trim().toUpperCase();
-    if (!s) return;
-    if (!/^[A-Z0-9]{3,15}$/.test(s)) return;
-    const withUsdt = s.endsWith('USDT') ? s : `${s}USDT`;
+    const raw = newSym.trim().toUpperCase();
+    if (!raw) return;
+    const withUsdt = raw.endsWith('USDT') ? raw : `${raw}USDT`;
+    if (!/^[A-Z0-9]{3,15}$/.test(withUsdt)) return;
     if (symbols.includes(withUsdt)) return;
     setSymbols([withUsdt, ...symbols]);
     setNewSym('');
   };
 
-  const removeSymbol = (sym) => {
-    setSymbols(symbols.filter((x) => x !== sym));
-  };
+  const removeSymbol = (sym) => setSymbols(symbols.filter((x) => x !== sym));
+
+  useEffect(() => {
+    const onEnter = (e) => { if (e.key === 'Enter') addSymbol(); };
+    return () => {};
+  }, [addSymbol]);
 
   return (
     <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-4">
@@ -37,16 +36,8 @@ export default function Watchlist({ symbols, setSymbols, prices }) {
         <div className="text-sm font-semibold text-white/90">Watchlist</div>
       </div>
       <div className="mb-3 flex gap-2">
-        <input
-          value={newSym}
-          onChange={(e) => setNewSym(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && addSymbol()}
-          placeholder="Add symbol (e.g. AVAXUSDT)"
-          className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:ring-2 focus:ring-white/20"
-        />
-        <button onClick={addSymbol} className="inline-flex items-center gap-2 rounded-md bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20">
-          <Plus size={16} /> Add
-        </button>
+        <input value={newSym} onChange={(e) => setNewSym(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addSymbol()} placeholder="Add symbol (e.g. AVAXUSDT)" className="w-full rounded-md border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder-white/40 outline-none focus:ring-2 focus:ring-white/20" />
+        <button onClick={addSymbol} className="inline-flex items-center gap-2 rounded-md bg-white/10 px-3 py-2 text-sm text-white hover:bg-white/20"><Plus size={16} /> Add</button>
       </div>
       <div className="divide-y divide-white/5">
         {rows.map((r) => (
@@ -57,9 +48,7 @@ export default function Watchlist({ symbols, setSymbols, prices }) {
             </div>
             <div className="flex items-center gap-3">
               <div className="text-sm text-white/80">${fmt(r.price)}</div>
-              <button onClick={() => removeSymbol(r.symbol)} className="rounded-md bg-white/5 p-1 text-white/60 hover:bg-white/10">
-                <X size={14} />
-              </button>
+              <button onClick={() => removeSymbol(r.symbol)} className="rounded-md bg-white/5 p-1 text-white/60 hover:bg-white/10"><X size={14} /></button>
             </div>
           </div>
         ))}
