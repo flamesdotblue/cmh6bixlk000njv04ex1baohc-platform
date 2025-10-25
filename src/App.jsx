@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import HeroCover from './components/HeroCover';
-import SignalControls from './components/SignalControls';
-import SignalCard from './components/SignalCard';
-import Footer from './components/Footer';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import HeaderBar from './components/HeaderBar';
+import Controls from './components/Controls';
+import Watchlist from './components/Watchlist';
+import SignalBoard from './components/SignalBoard';
 
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
 const BASE_URL = 'https://api.bybit.com';
+const WS_URL = 'wss://stream.bybit.com/v5/public/linear';
+
+const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
 
 function useInterval(callback, delay) {
   const savedCallback = useRef();
@@ -13,24 +15,145 @@ function useInterval(callback, delay) {
     savedCallback.current = callback;
   }, [callback]);
   useEffect(() => {
-    if (delay === null) return;
+    if (delay == null) return;
     const id = setInterval(() => savedCallback.current && savedCallback.current(), delay);
     return () => clearInterval(id);
   }, [delay]);
 }
 
+function useBybitWS(symbols) {
+  const [status, setStatus] = useState('idle'); // idle|connecting|open|closed
+  const [lastPing, setLastPing] = useState(null);
+  const [lastPong, setLastPong] = useState(null);
+  const [latency, setLatency] = useState(null);
+  const [prices, setPrices] = useState({});
+  const [lastTick, setLastTick] = useState(null);
+  const wsRef = useRef(null);
+  const subsRef = useRef(new Set());
+
+  const connect = useCallback(() => {
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch {}
+      wsRef.current = null;
+    }
+    setStatus('connecting');
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setStatus('open');
+      // Subscribe tickers for symbols
+      const args = symbols.map((s) => `tickers.${s}`);
+      subsRef.current = new Set(args);
+      ws.send(JSON.stringify({ op: 'subscribe', args }));
+      // start ping
+      const ping = () => {
+        if (ws.readyState !== 1) return;
+        const now = Date.now();
+        setLastPing(now);
+        ws.send(JSON.stringify({ op: 'ping' }));
+      };
+      ping();
+    };
+
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.op === 'pong') {
+          const now = Date.now();
+          setLastPong(now);
+          setLatency(last => (lastPing ? now - lastPing : last));
+          return;
+        }
+        if (msg.topic && msg.topic.startsWith('tickers.')) {
+          const sym = msg.topic.split('.')[1];
+          const data = msg.data?.[0] || msg.data; // v5 returns object or array
+          const lastPrice = parseFloat(data?.lastPrice || data?.lastPrice || '0');
+          if (Number.isFinite(lastPrice) && lastPrice > 0) {
+            setPrices((p) => ({ ...p, [sym]: { price: lastPrice, ts: Date.now() } }));
+            setLastTick(Date.now());
+          }
+        }
+      } catch {}
+    };
+
+    ws.onclose = () => {
+      setStatus('closed');
+    };
+
+    ws.onerror = () => {
+      setStatus('closed');
+    };
+  }, [symbols]);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      try { wsRef.current && wsRef.current.close(); } catch {}
+      wsRef.current = null;
+    };
+  }, [connect]);
+
+  // Keep subscriptions in sync when symbols change
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== 1) return;
+    const want = new Set(symbols.map((s) => `tickers.${s}`));
+    const have = subsRef.current;
+
+    const toUnsub = [...have].filter((x) => !want.has(x));
+    const toSub = [...want].filter((x) => !have.has(x));
+
+    if (toUnsub.length) ws.send(JSON.stringify({ op: 'unsubscribe', args: toUnsub }));
+    if (toSub.length) ws.send(JSON.stringify({ op: 'subscribe', args: toSub }));
+    subsRef.current = want;
+  }, [symbols]);
+
+  // Heartbeat ping every 10s
+  useInterval(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== 1) return;
+    setLastPing(Date.now());
+    ws.send(JSON.stringify({ op: 'ping' }));
+  }, 10000);
+
+  return { status, latency, prices, lastTick };
+}
+
+// Indicator helpers
 function ema(values, period) {
   if (!values || values.length === 0) return [];
   const k = 2 / (period + 1);
-  const result = [];
+  const res = [];
   let prev = values[0];
-  result.push(prev);
+  res.push(prev);
   for (let i = 1; i < values.length; i++) {
     const next = values[i] * k + prev * (1 - k);
-    result.push(next);
+    res.push(next);
     prev = next;
   }
-  return result;
+  return res;
+}
+
+function rsi(values, period = 14) {
+  if (!values || values.length < period + 1) return Array(values.length).fill(null);
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  gains /= period; losses /= period;
+  const out = Array(values.length).fill(null);
+  out[period] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
+  for (let i = period + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    gains = (gains * (period - 1) + gain) / period;
+    losses = (losses * (period - 1) + loss) / period;
+    out[i] = 100 - 100 / (1 + (gains / (losses || 1e-9)));
+  }
+  return out;
 }
 
 function trueRange(h, l, c, i) {
@@ -43,42 +166,26 @@ function trueRange(h, l, c, i) {
 }
 
 function atr(highs, lows, closes, period = 14) {
+  if (!highs?.length || highs.length !== lows.length || lows.length !== closes.length) return [];
   const trs = highs.map((_, i) => trueRange(highs, lows, closes, i));
-  // Wilder's smoothing: use simple SMA for first and then EMA-like smoothing
   const res = [];
-  let prevAtr = null;
+  let prev = 0;
   for (let i = 0; i < trs.length; i++) {
     if (i < period) {
       const slice = trs.slice(0, i + 1);
       const sma = slice.reduce((a, b) => a + b, 0) / slice.length;
-      res.push(sma);
-      if (i === period) prevAtr = sma;
+      prev = sma;
+      res.push(prev);
     } else {
-      prevAtr = (prevAtr * (period - 1) + trs[i]) / period;
-      res.push(prevAtr);
+      prev = (prev * (period - 1) + trs[i]) / period;
+      res.push(prev);
     }
   }
   return res;
 }
 
-async function fetchTicker(symbol) {
-  const url = `${BASE_URL}/v5/market/tickers?category=linear&symbol=${symbol}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Ticker fetch failed');
-  const data = await res.json();
-  const it = data?.result?.list?.[0];
-  if (!it) throw new Error('No ticker');
-  return {
-    symbol,
-    lastPrice: parseFloat(it.lastPrice),
-    volume24: parseFloat(it.volume24h),
-    turnover24: parseFloat(it.turnover24h),
-    priceChangeRate24h: parseFloat(it.price24hPcnt || '0'),
-  };
-}
-
-async function fetchKlines(symbol) {
-  const url = `${BASE_URL}/v5/market/kline?category=linear&symbol=${symbol}&interval=5&limit=120`;
+async function fetchKlines(symbol, interval = '5', limit = 200) {
+  const url = `${BASE_URL}/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Kline fetch failed');
   const data = await res.json();
@@ -92,62 +199,71 @@ async function fetchKlines(symbol) {
   return { o, h, l, c, v };
 }
 
-function decideSignal(symbol, price, k) {
-  if (!k || !k.c || k.c.length < 30) return null;
+function decideSignal(symbol, tickPrice, k, params) {
+  if (!k || !k.c || k.c.length < 50 || !tickPrice) return null;
   const closes = k.c;
   const highs = k.h;
   const lows = k.l;
   const vols = k.v;
+  const last = closes.length - 1;
 
   const ema9 = ema(closes, 9);
   const ema21 = ema(closes, 21);
-  const last = closes.length - 1;
-  const trendUp = ema9[last] > ema21[last];
-  const trendDown = ema9[last] < ema21[last];
-
+  const rsi14 = rsi(closes, 14);
   const a = atr(highs, lows, closes, 14);
   const atrPct = a[last] / closes[last];
 
+  // dynamic leverage based on volatility
   let leverage = 20;
   if (atrPct < 0.008) leverage = 50;
   else if (atrPct < 0.015) leverage = 25;
   else if (atrPct < 0.03) leverage = 15;
   else leverage = 10;
+  leverage = Math.min(params.maxLeverage || leverage, leverage);
 
-  // Volume pulse: last 3 vs prior 10 average
+  const trendUp = ema9[last] > ema21[last];
+  const trendDown = ema9[last] < ema21[last];
+
+  // Volume pulse: recent vs baseline
   const recentVol = vols.slice(-3).reduce((x, y) => x + y, 0) / 3;
-  const baseVol = vols.slice(-13, -3).reduce((x, y) => x + y, 0) / 10 || 1;
+  const baseVol = vols.slice(-20, -3).reduce((x, y) => x + y, 0) / 17 || 1;
   const volBoost = recentVol / baseVol;
 
-  // Momentum: last 3 closes slope
-  const m1 = closes[last] - closes[last - 1];
-  const m2 = closes[last - 1] - closes[last - 2];
-  const mom = (m1 + m2) / 2;
+  // Momentum and breakout filters
+  const mom = closes[last] - closes[last - 3];
+  const rangeHigh = Math.max(...highs.slice(-params.breakoutLookback));
+  const rangeLow = Math.min(...lows.slice(-params.breakoutLookback));
+
+  const strongLong = trendUp && mom > 0 && volBoost > 1.05 && tickPrice > rangeHigh * (1 - params.breakoutBuffer);
+  const strongShort = trendDown && mom < 0 && volBoost > 1.05 && tickPrice < rangeLow * (1 + params.breakoutBuffer);
+
+  const rsiOkLong = (rsi14[last] ?? 50) > 48 && (rsi14[last] ?? 50) < 75;
+  const rsiOkShort = (rsi14[last] ?? 50) < 52 && (rsi14[last] ?? 50) > 25;
 
   let side = null;
-  if (trendUp && mom > 0 && volBoost > 1.05) side = 'LONG';
-  if (trendDown && mom < 0 && volBoost > 1.05) side = 'SHORT';
+  if (params.enableLongs && strongLong && rsiOkLong) side = 'LONG';
+  if (params.enableShorts && strongShort && rsiOkShort) side = side ? side : 'SHORT';
   if (!side) return null;
 
-  const capital = 20; // USDT
-  const amount = 20; // recommended amount in USDT
+  const capital = params.capital;
+  const amount = params.amount; // recommended amount in USDT
   const notional = amount * leverage;
-  const targetProfitUSDT = 20; // aim 100% on $20
-  const riskUSDT = 5; // risk 25%
+  const targetProfitUSDT = params.targetProfit; // aim 100% on $20
+  const riskUSDT = params.risk;
 
   const requiredMoveTP = targetProfitUSDT / notional; // fraction
   const requiredMoveSL = riskUSDT / notional; // fraction
 
-  const entry = price;
+  const entry = tickPrice;
   const tp = side === 'LONG' ? entry * (1 + requiredMoveTP) : entry * (1 - requiredMoveTP);
   const sl = side === 'LONG' ? entry * (1 - requiredMoveSL) : entry * (1 + requiredMoveSL);
 
-  const reasoning = `${side} on ${symbol}: EMA(9/21) trend with volume boost ${volBoost.toFixed(2)} and momentum confirmation.`;
+  const reasoning = `${side} ${symbol}: EMA9/21 trend, vol x${volBoost.toFixed(2)}, RSI ${Math.round(rsi14[last] || 0)}, breakout ${params.breakoutLookback} bars.`;
 
   return {
     symbol,
     side,
-    price,
+    price: tickPrice,
     amount,
     leverage,
     capital,
@@ -156,135 +272,130 @@ function decideSignal(symbol, price, k) {
     entry,
     takeProfit: tp,
     stopLoss: sl,
+    meta: { volBoost, atrPct, rsi: rsi14[last] },
     reasoning,
   };
 }
 
 export default function App() {
-  const [signals, setSignals] = useState([]);
+  const [symbols, setSymbols] = useState(DEFAULT_SYMBOLS);
+  const { status, latency, prices, lastTick } = useBybitWS(symbols);
+
+  const [intervalSel, setIntervalSel] = useState('5'); // 1,3,5,15
+  const [running, setRunning] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [running, setRunning] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [intervalMs, setIntervalMs] = useState(5 * 60 * 1000); // 5 minutes
+  const [signals, setSignals] = useState([]);
 
-  const fetchAll = async () => {
+  const params = useMemo(() => ({
+    capital: 20,
+    amount: 20,
+    targetProfit: 20,
+    risk: 5,
+    maxLeverage: 50,
+    breakoutLookback: 24,
+    breakoutBuffer: 0.0005,
+    enableLongs: true,
+    enableShorts: true,
+  }), []);
+
+  const fetchAndSignal = useCallback(async () => {
+    if (!running) return;
     setLoading(true);
     setError(null);
     try {
-      const tickers = await Promise.all(
-        SYMBOLS.map(async (s) => {
+      const results = await Promise.all(
+        symbols.map(async (sym) => {
           try {
-            return await fetchTicker(s);
+            const k = await fetchKlines(sym, intervalSel, 200);
+            const tick = prices[sym]?.price;
+            return decideSignal(sym, tick, k, params);
           } catch (e) {
             return null;
           }
         })
       );
-      const validTickers = tickers.filter(Boolean);
-      const klinesMap = Object.fromEntries(
-        await Promise.all(
-          validTickers.map(async (t) => {
-            try {
-              const k = await fetchKlines(t.symbol);
-              return [t.symbol, k];
-            } catch (e) {
-              return [t.symbol, null];
-            }
-          })
-        )
-      );
-
-      const sigs = validTickers
-        .map((t) => {
-          const k = klinesMap[t.symbol];
-          return decideSignal(t.symbol, t.lastPrice, k);
-        })
-        .filter(Boolean);
-
-      // Rank by volume turnover or vol boost proxy
-      const ranked = sigs.sort((a, b) => {
-        // prioritize BTC/ETH then others
-        const prio = (sym) => (sym.startsWith('BTC') || sym.startsWith('ETH') ? 1 : 0);
-        if (prio(b.symbol) !== prio(a.symbol)) return prio(b.symbol) - prio(a.symbol);
-        return Math.abs(b.entry - b.takeProfit) - Math.abs(a.entry - a.takeProfit);
+      const list = results.filter(Boolean);
+      // Rank by vol boost then ATR pct potential
+      const ranked = list.sort((a, b) => {
+        const av = Math.abs(a.takeProfit - a.entry);
+        const bv = Math.abs(b.takeProfit - b.entry);
+        if ((b.meta?.volBoost || 0) !== (a.meta?.volBoost || 0)) return (b.meta?.volBoost || 0) - (a.meta?.volBoost || 0);
+        return bv - av;
       });
-
-      setSignals(ranked.slice(0, 6));
-      setLastUpdated(new Date());
+      setSignals(ranked);
     } catch (e) {
-      setError('Failed to load market data');
+      setError('Failed to compute signals');
     } finally {
       setLoading(false);
     }
-  };
+  }, [symbols, intervalSel, prices, running, params]);
 
   useEffect(() => {
-    fetchAll();
-  }, []);
+    fetchAndSignal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalSel]);
 
-  useInterval(
-    () => {
-      if (running) fetchAll();
-    },
-    running ? intervalMs : null
-  );
+  // Recompute when real-time price changes (debounced ~ 3s)
+  const debounceRef = useRef(null);
+  useEffect(() => {
+    if (!running) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchAndSignal();
+    }, 3000);
+    return () => debounceRef.current && clearTimeout(debounceRef.current);
+  }, [lastTick, fetchAndSignal, running]);
 
-  const nextRefreshIn = useNextRefreshCountdown(lastUpdated, intervalMs, running);
+  // Manual periodic refresh of klines
+  useInterval(() => {
+    if (running) fetchAndSignal();
+  }, 60 * 1000);
 
-  const header = useMemo(() => ({
-    title: 'Crypto Futures Alpha Signals',
-    subtitle:
-      'High-probability scalps and quick swings every 5 minutes. Auto-refreshed execution-ready entries with TP/SL.',
+  const headerInfo = useMemo(() => ({
+    title: 'Real‑Time Crypto Futures Alpha Signals',
+    subtitle: 'Bybit USDT‑Perp. Execution‑ready scalps and quick swings, updated live.',
   }), []);
 
   return (
     <div className="min-h-screen w-full bg-black text-white">
-      <div className="relative h-[60vh] w-full">
-        <HeroCover title={header.title} subtitle={header.subtitle} />
-      </div>
+      <HeaderBar
+        title={headerInfo.title}
+        subtitle={headerInfo.subtitle}
+        wsStatus={status}
+        latency={latency}
+        lastTick={lastTick}
+        onRefresh={fetchAndSignal}
+        loading={loading}
+      />
 
-      <div className="mx-auto max-w-6xl px-4 py-8">
-        <SignalControls
+      <div className="mx-auto max-w-7xl px-4 pb-12 pt-6">
+        <Controls
           running={running}
-          onToggle={() => setRunning((v) => !v)}
+          setRunning={setRunning}
+          intervalSel={intervalSel}
+          setIntervalSel={setIntervalSel}
+          onRefresh={fetchAndSignal}
           loading={loading}
-          onRefresh={fetchAll}
-          nextRefreshIn={nextRefreshIn}
-          intervalMs={intervalMs}
-          setIntervalMs={setIntervalMs}
         />
 
-        {error && (
-          <div className="mt-4 rounded-md border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">
-            {error}
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
+          <div className="lg:col-span-3">
+            <Watchlist symbols={symbols} setSymbols={setSymbols} prices={prices} />
           </div>
-        )}
-
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {signals.map((s) => (
-            <SignalCard key={`${s.symbol}-${s.side}`} signal={s} />
-          ))}
+          <div className="lg:col-span-9">
+            {error && (
+              <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
+            )}
+            <SignalBoard signals={signals} loading={loading} />
+          </div>
         </div>
 
-        {!loading && signals.length === 0 && (
-          <div className="mt-8 rounded-lg border border-white/10 p-6 text-center text-sm text-white/70">
-            No qualified setups right now. Waiting for the next window.
-          </div>
-        )}
-
-        <Footer />
+        <div className="mt-8 space-y-2 border-t border-white/10 pt-6 text-center text-xs text-white/50">
+          <p>Data source: Bybit public REST + WebSocket (v5). Prices update in real time from exchange feed.</p>
+          <p>Research/education only. Crypto futures are high risk. Use strict risk management.</p>
+        </div>
       </div>
     </div>
   );
-}
-
-function useNextRefreshCountdown(lastUpdated, intervalMs, running) {
-  const [now, setNow] = useState(Date.now());
-  useInterval(() => setNow(Date.now()), 250);
-  if (!running || !lastUpdated) return null;
-  const elapsed = now - lastUpdated.getTime();
-  const remain = Math.max(0, intervalMs - elapsed);
-  const s = Math.ceil(remain / 1000);
-  return s;
 }
