@@ -1,6 +1,11 @@
-import { TrendingUp, TrendingDown, Target, ShieldAlert, Info } from 'lucide-react';
+import { TrendingUp, TrendingDown, Target, ShieldAlert } from 'lucide-react';
 
-function fmt(n, p = 6) { if (!isFinite(n)) return '—'; if (n > 100) return n.toFixed(2); if (n > 1) return n.toFixed(4); return n.toFixed(p); }
+function fmt(n, p = 6) {
+  if (!isFinite(n)) return '—';
+  if (n > 100) return n.toFixed(2);
+  if (n > 1) return n.toFixed(4);
+  return n.toFixed(p);
+}
 
 export default function SignalBoard({ signals, loading }) {
   return (
@@ -10,10 +15,14 @@ export default function SignalBoard({ signals, loading }) {
         <div className="text-xs text-white/60">{loading ? 'Computing…' : `${signals?.length || 0} setups`}</div>
       </div>
       {(!signals || signals.length === 0) && (
-        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">No qualified setups right now. Waiting for the next window.</div>
+        <div className="rounded-md border border-white/10 bg-white/5 p-4 text-center text-xs text-white/60">
+          No qualified setups right now. Waiting for the next window.
+        </div>
       )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {signals.map((s) => (<SignalCard key={`${s.symbol}-${s.side}-${Math.round(s.entry*1e6)}`} s={s} />))}
+        {signals.map((s) => (
+          <SignalCard key={`${s.symbol}-${s.side}-${Math.round(s.entry*1e6)}`} s={s} />
+        ))}
       </div>
     </div>
   );
@@ -25,10 +34,12 @@ function SignalCard({ s }) {
     <div className="relative overflow-hidden rounded-xl border border-white/10 bg-zinc-900/60 p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <div className={`flex h-6 w-6 items-center justify-center rounded ${isLong ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>{isLong ? <TrendingUp size={16} /> : <TrendingDown size={16} />}</div>
+          <div className={`flex h-6 w-6 items-center justify-center rounded ${isLong ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+            {isLong ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+          </div>
           <div className="text-sm font-semibold text-white/90">{s.side} {s.symbol}</div>
         </div>
-        <div className="text-xs text-white/60">Live: ${fmt(s.price)}</div>
+        <div className="text-xs text-white/60">Bybit Live: ${fmt(s.price)}</div>
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-xs text-white/80">
@@ -42,17 +53,17 @@ function SignalCard({ s }) {
         <Field label="Capital Used">${s.capital} USDT</Field>
       </div>
 
-      <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">
-        <div className="flex items-start gap-2"><Info size={12} className="mt-[2px]" /> <div className="flex-1">{s.reasoning}</div></div>
-      </div>
+      {s.reasoning && (
+        <div className="mt-3 rounded-md border border-white/10 bg-white/5 p-2 text-[11px] text-white/70">
+          {s.reasoning}
+        </div>
+      )}
 
-      <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-white/60">
+      <div className="mt-3 grid grid-cols-4 gap-2 text-[11px] text-white/60">
         <Badge>Vol x{(s.meta?.volBoost || 0).toFixed(2)}</Badge>
         <Badge>ATR {(s.meta?.atrPct ? (s.meta.atrPct * 100).toFixed(2) : '—')}%</Badge>
         <Badge>RSI {s.meta?.rsi ? Math.round(s.meta.rsi) : '—'}</Badge>
-        <Badge>Funding {(s.meta?.fundingRate != null ? (s.meta.fundingRate*100).toFixed(3) : '—')}%</Badge>
-        <Badge>Taker {s.meta?.takerRatio ? s.meta.takerRatio.toFixed(2) : '—'}</Badge>
-        <Badge>OI Δ {(s.meta?.oiChangePct != null ? (s.meta.oiChangePct*100).toFixed(2) : '—')}%</Badge>
+        <Badge>Conf {(s.meta?.confidence || 0).toFixed(0)}%</Badge>
       </div>
     </div>
   );
@@ -67,4 +78,6 @@ function Field({ label, children }) {
   );
 }
 
-function Badge({ children }) { return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>; }
+function Badge({ children }) {
+  return <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-center">{children}</div>;
+}
