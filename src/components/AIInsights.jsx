@@ -7,13 +7,37 @@ function fmt(n) {
   return n.toFixed(6);
 }
 
+function calcRR(s) {
+  const risk = Math.abs(s.entry - s.stopLoss);
+  const reward = Math.abs(s.takeProfit - s.entry);
+  return risk > 0 ? reward / risk : 0;
+}
+
 function scoreSignal(s) {
   const conf = s.meta?.confidence || 0;
-  const rr = Math.abs((s.takeProfit - s.entry) / (s.entry - s.stopLoss || 1e-9));
+  const rr = calcRR(s);
   const rrScore = Math.max(0, Math.min(40, rr * 10));
   const volScore = Math.max(0, Math.min(20, ((s.meta?.volBoost || 1) - 1) * 20));
   const atrPenalty = Math.max(0, 10 - ((s.meta?.atrPct || 0) * 100));
-  return conf + rrScore + volScore + atrPenalty; // 0..~170
+  return conf + rrScore + volScore + atrPenalty;
+}
+
+function aiNarrative(s) {
+  const c = s.meta?.confidence || 0;
+  const rr = calcRR(s);
+  const vol = s.meta?.volBoost || 1;
+  const rsi = s.meta?.rsi || 50;
+  const lines = [];
+  if (c >= 70) lines.push('High confidence trend + volume alignment.');
+  else if (c >= 50) lines.push('Moderate confidence with improving momentum.');
+  else lines.push('Cautious setup; wait for stronger confirmation.');
+  if (rr >= 1.5) lines.push('Attractive risk/reward profile.');
+  else if (rr >= 1.0) lines.push('Balanced R/R.');
+  else lines.push('Weak R/R; consider tighter SL or skip.');
+  if (vol > 1.15) lines.push('Volume expansion supports continuation.');
+  if (s.side === 'LONG' && rsi > 70) lines.push('RSI elevated; risk of pullback.');
+  if (s.side === 'SHORT' && rsi < 30) lines.push('RSI depressed; risk of mean reversion.');
+  return lines.join(' ');
 }
 
 export default function AIInsights({ signals }) {
@@ -59,28 +83,4 @@ export default function AIInsights({ signals }) {
       )}
     </div>
   );
-}
-
-function calcRR(s) {
-  const risk = Math.abs(s.entry - s.stopLoss);
-  const reward = Math.abs(s.takeProfit - s.entry);
-  return risk > 0 ? reward / risk : 0;
-}
-
-function aiNarrative(s) {
-  const c = s.meta?.confidence || 0;
-  const rr = calcRR(s);
-  const vol = s.meta?.volBoost || 1;
-  const rsi = s.meta?.rsi || 50;
-  const lines = [];
-  if (c >= 70) lines.push('High confidence trend + volume alignment.');
-  else if (c >= 50) lines.push('Moderate confidence with improving momentum.');
-  else lines.push('Cautious setup; wait for stronger confirmation.');
-  if (rr >= 1.5) lines.push('Attractive risk/reward profile.');
-  else if (rr >= 1.0) lines.push('Balanced R/R.');
-  else lines.push('Weak R/R; consider tighter SL or skip.');
-  if (vol > 1.15) lines.push('Volume expansion supports continuation.');
-  if (s.side === 'LONG' && rsi > 70) lines.push('RSI elevated; risk of pullback.');
-  if (s.side === 'SHORT' && rsi < 30) lines.push('RSI depressed; risk of mean reversion.');
-  return lines.join(' ');
 }

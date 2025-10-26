@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import HeaderBar from './components/HeaderBar';
 import SettingsPanel from './components/SettingsPanel';
-import Watchlist from './components/Watchlist';
+import AIInsights from './components/AIInsights';
 import SignalBoard from './components/SignalBoard';
 
 const BASE_URL = 'https://api.bybit.com';
@@ -30,8 +30,8 @@ function useBybitWS(symbols) {
   const lastPingRef = useRef(null);
   const backoffRef = useRef(1000);
 
-  const subscribe = (ws, nextSymbols) => {
-    const args = nextSymbols.map((s) => `tickers.${s}`);
+  const subscribe = (ws, syms) => {
+    const args = syms.map((s) => `tickers.${s}`);
     subsRef.current = new Set(args);
     ws.send(JSON.stringify({ op: 'subscribe', args }));
   };
@@ -65,6 +65,7 @@ function useBybitWS(symbols) {
             setPrices((p) => ({ ...p, [sym]: { price: lastPrice, ts: Date.now() } }));
             setLastTick(Date.now());
           }
+          return;
         }
       } catch {}
     };
@@ -264,7 +265,7 @@ function decideSignal(symbol, tickPrice, k, params) {
 }
 
 export default function App() {
-  const [symbols, setSymbols] = useState(DEFAULT_SYMBOLS);
+  const [symbols] = useState(DEFAULT_SYMBOLS);
   const { status, latency, prices, lastTick } = useBybitWS(symbols);
 
   const [running, setRunning] = useState(true);
@@ -351,7 +352,7 @@ export default function App() {
 
   const headerInfo = useMemo(() => ({
     title: 'Real-Time Crypto Futures Alpha Signals',
-    subtitle: 'Bybit USDT-Perp. High-probability scalps and quick swings with execution-ready entries.',
+    subtitle: 'Live Bybit USDT-Perp signals with AI-style ranking and execution-ready entries.',
   }), []);
 
   return (
@@ -367,8 +368,12 @@ export default function App() {
       />
 
       <div className="mx-auto max-w-7xl px-4 pb-12 pt-6">
+        {error && (
+          <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
+        )}
+
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          <div className="lg:col-span-3 space-y-6">
+          <div className="lg:col-span-4">
             <SettingsPanel
               running={running}
               setRunning={setRunning}
@@ -379,19 +384,16 @@ export default function App() {
               onRefresh={fetchAndSignal}
               loading={loading}
             />
-            <Watchlist symbols={symbols} setSymbols={setSymbols} prices={prices} />
           </div>
-          <div className="lg:col-span-9">
-            {error && (
-              <div className="mb-4 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
-            )}
+          <div className="lg:col-span-8 space-y-6">
+            <AIInsights signals={signals} />
             <SignalBoard signals={signals} loading={loading} />
           </div>
         </div>
 
         <div className="mt-8 space-y-2 border-t border-white/10 pt-6 text-center text-xs text-white/50">
           <p>Live prices via Bybit WebSocket v5 (linear). Signals recompute on tick and every 60s.</p>
-          <p>Research/education only. Crypto futures involve substantial risk. Manage risk strictly.</p>
+          <p>This is research/education only. Crypto futures are high risk. Manage risk strictly.</p>
         </div>
       </div>
     </div>
